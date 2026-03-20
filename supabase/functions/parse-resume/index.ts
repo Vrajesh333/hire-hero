@@ -34,6 +34,78 @@ function toErrorMessage(err: unknown): string {
   return "Unknown error";
 }
 
+function safeJsonParse(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstJsonObject(value: string): Record<string, unknown> | null {
+  const firstBrace = value.indexOf("{");
+  const lastBrace = value.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
+  const candidate = value.slice(firstBrace, lastBrace + 1);
+  return safeJsonParse(candidate);
+}
+
+function extractParsedResume(aiData: any): Record<string, unknown> {
+  const toolArgs = aiData?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+  if (typeof toolArgs === "string") {
+    const parsed = safeJsonParse(toolArgs) || extractFirstJsonObject(toolArgs);
+    if (parsed) return parsed;
+  }
+
+  const content = aiData?.choices?.[0]?.message?.content;
+  if (typeof content === "string") {
+    const parsed = safeJsonParse(content) || extractFirstJsonObject(content);
+    if (parsed) return parsed;
+  }
+
+  throw new Error("AI did not return parseable resume data");
+}
+
+function normalizeParsedResume(parsed: Record<string, unknown>) {
+  const getString = (key: string): string | null => {
+    const value = parsed[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  };
+
+  const getStringArray = (key: string): string[] => {
+    const value = parsed[key];
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  };
+
+  const getNumber = (key: string): number | null => {
+    const value = parsed[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  };
+
+  return {
+    name: getString("name"),
+    email: getString("email"),
+    phone: getString("phone"),
+    skills: getStringArray("skills"),
+    education: getString("education"),
+    experience_years: getNumber("experience_years"),
+    certifications: getStringArray("certifications"),
+    projects: getString("projects"),
+    work_experience: getString("work_experience"),
+    ai_summary: getString("ai_summary"),
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -112,10 +184,8 @@ ${content.slice(0, 8000)}`,
     }
 
     const aiData = await aiResponse.json();
-    const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
-    if (!toolCall) throw new Error("AI did not return parsed data");
-
-    const parsed = JSON.parse(toolCall.function.arguments);
+    const parsedRaw = extractParsedResume(aiData);
+    const parsed = normalizeParsedResume(parsedRaw);
 
     // Save to database
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;

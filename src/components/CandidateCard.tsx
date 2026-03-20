@@ -14,9 +14,29 @@ interface CandidateCardProps {
   rank?: number;
 }
 
+function cleanText(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+
+  const lower = normalized.toLowerCase();
+  if (lower === "not provided" || lower === "n/a" || lower === "na" || lower === "unknown") {
+    return null;
+  }
+
+  return normalized;
+}
+
 export function CandidateCard({ candidate, onToggleShortlist, rank }: CandidateCardProps) {
   const [expanded, setExpanded] = useState(false);
   const m = candidate.match;
+  const displayName = cleanText(candidate.name) || cleanText(candidate.resume_filename) || "Candidate";
+  const displayEmail = cleanText(candidate.email);
+  const displayPhone = cleanText(candidate.phone);
+  const displayEducation = cleanText(candidate.education);
+  const displaySkills = (candidate.skills ?? [])
+    .map((skill) => cleanText(skill))
+    .filter((skill): skill is string => Boolean(skill));
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
@@ -30,13 +50,13 @@ export function CandidateCard({ candidate, onToggleShortlist, rank }: CandidateC
                 </div>
               )}
               <div className="min-w-0">
-                <CardTitle className="text-base truncate">{candidate.name || "Unknown"}</CardTitle>
+                <CardTitle className="text-base truncate">{displayName}</CardTitle>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                  {candidate.email && (
-                    <span className="flex items-center gap-1 truncate"><Mail className="h-3 w-3" />{candidate.email}</span>
+                  {displayEmail && (
+                    <span className="flex items-center gap-1 truncate"><Mail className="h-3 w-3" />{displayEmail}</span>
                   )}
-                  {candidate.phone && (
-                    <span className="flex items-center gap-1"><Phone className="h-3 w-3" />{candidate.phone}</span>
+                  {displayPhone && (
+                    <span className="flex items-center gap-1"><Phone className="h-3 w-3" />{displayPhone}</span>
                   )}
                 </div>
               </div>
@@ -58,13 +78,13 @@ export function CandidateCard({ candidate, onToggleShortlist, rank }: CandidateC
         </CardHeader>
         <CardContent className="space-y-3">
           {/* Skills */}
-          {candidate.skills && candidate.skills.length > 0 && (
+          {displaySkills.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {candidate.skills.slice(0, 8).map((skill) => (
+              {displaySkills.slice(0, 8).map((skill) => (
                 <Badge key={skill} variant="secondary" className="text-xs">{skill}</Badge>
               ))}
-              {candidate.skills.length > 8 && (
-                <Badge variant="outline" className="text-xs">+{candidate.skills.length - 8}</Badge>
+              {displaySkills.length > 8 && (
+                <Badge variant="outline" className="text-xs">+{displaySkills.length - 8}</Badge>
               )}
             </div>
           )}
@@ -72,7 +92,7 @@ export function CandidateCard({ candidate, onToggleShortlist, rank }: CandidateC
           {/* Quick info */}
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             {candidate.experience_years != null && <span>{candidate.experience_years} yrs exp</span>}
-            {candidate.education && <span className="truncate">{candidate.education}</span>}
+            {displayEducation && <span className="truncate">{displayEducation}</span>}
           </div>
 
           {/* Score bars */}

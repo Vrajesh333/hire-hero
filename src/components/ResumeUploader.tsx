@@ -76,6 +76,42 @@ function isEdgeFunctionTransportError(error: unknown): boolean {
   );
 }
 
+function getFunctionStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const e = error as { context?: { status?: number } };
+  return typeof e.context?.status === "number" ? e.context.status : null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function invokeParseResumeWithRetry(filename: string, content: string) {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { error } = await supabase.functions.invoke("parse-resume", {
+      body: { filename, content },
+    });
+
+    if (!error) return;
+
+    const status = getFunctionStatusCode(error);
+    const message = await getFunctionErrorMessage(error);
+    const lower = message.toLowerCase();
+    const canRetry =
+      attempt < maxAttempts &&
+      (status === 429 || status === 500 || lower.includes("parseable") || lower.includes("ai error"));
+
+    if (canRetry) {
+      await sleep(1200 * attempt);
+      continue;
+    }
+
+    throw error;
+  }
+}
+
 function inferCandidateName(filename: string, text: string): string | null {
   const firstLine = text
     .split(/\r?\n/)
@@ -134,7 +170,7 @@ async function saveCandidateFallback(filename: string, text: string) {
     skills: inferSkills(text),
     resume_filename: filename,
     raw_text: text,
-    ai_summary: "Uploaded while parser service was unavailable. Structured AI extraction pending.",
+    ai_summary: null,
   };
 
   const { error } = await supabase.from("candidates").insert(payload);
@@ -154,10 +190,31 @@ async function extractPdfText(file: File): Promise<string> {
   for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
     const page = await doc.getPage(pageNum);
     const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join(" ")
-      .replace(/\s+/g, " ")
+
+    let previousY: number | null = null;
+    const lineParts: string[] = [];
+
+    for (const item of content.items as Array<{ str?: string; transform?: number[]; hasEOL?: boolean }>) {
+      const text = (item.str || "").trim();
+      if (!text) continue;
+
+      const y = Array.isArray(item.transform) ? item.transform[5] : null;
+      const movedToNewLine =
+        previousY !== null && y !== null && Math.abs(y - previousY) > 2;
+
+      if (lineParts.length === 0 || movedToNewLine || item.hasEOL) {
+        lineParts.push(text);
+      } else {
+        lineParts[lineParts.length - 1] = `${lineParts[lineParts.length - 1]} ${text}`;
+      }
+
+      previousY = y;
+    }
+
+    const pageText = lineParts
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n")
       .trim();
 
     if (pageText) {
@@ -281,7 +338,6 @@ export function ResumeUploader() {
     if (files.length === 0) return;
     setUploading(true);
     let successCount = 0;
-    let fallbackCount = 0;
     const failures: string[] = [];
 
     try {
@@ -293,27 +349,9 @@ export function ResumeUploader() {
             throw new Error("Could not extract readable text from this file.");
           }
 
-          const { error } = await supabase.functions.invoke("parse-resume", {
-            body: { filename: file.name, content: extractedText },
-          });
-
-          if (error) throw error;
+          await invokeParseResumeWithRetry(file.name, extractedText);
           successCount++;
         } catch (err) {
-          if (isEdgeFunctionTransportError(err)) {
-            try {
-              await saveCandidateFallback(file.name, extractedText);
-              successCount++;
-              fallbackCount++;
-              continue;
-            } catch (fallbackErr) {
-              const primary = await getFunctionErrorMessage(err);
-              const fallback = await getFunctionErrorMessage(fallbackErr);
-              failures.push(`${file.name}: ${primary}. Fallback insert failed: ${fallback}`);
-              continue;
-            }
-          }
-
           const msg = await getFunctionErrorMessage(err);
           failures.push(`${file.name}: ${msg}`);
         }
@@ -321,13 +359,7 @@ export function ResumeUploader() {
 
       if (successCount > 0) {
         qc.invalidateQueries({ queryKey: ["candidates"] });
-        if (fallbackCount > 0) {
-          toast.success(
-            `${successCount} resume(s) uploaded. ${fallbackCount} saved in fallback mode (AI parse will need retry).`,
-          );
-        } else {
-          toast.success(`${successCount} resume(s) uploaded and parsed successfully.`);
-        }
+        toast.success(`${successCount} resume(s) uploaded and parsed successfully.`);
       }
 
       if (failures.length > 0) {
