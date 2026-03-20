@@ -6,11 +6,39 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const anyErr = err as Record<string, unknown>;
+    const message = anyErr.message;
+    if (typeof message === "string" && message.trim()) return message;
+
+    const details = anyErr.details;
+    const hint = anyErr.hint;
+    const code = anyErr.code;
+
+    const parts = [details, hint, code]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+
+    if (parts.length > 0) return parts.join(" | ");
+
+    try {
+      const serialized = JSON.stringify(err);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch {
+      // Ignore JSON serialization errors and fall through to fallback.
+    }
+  }
+
+  return "Unknown error";
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { filename, content } = await req.json();
+    const { filename, content, resume_url } = await req.json();
     if (!content) throw new Error("No content provided");
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
@@ -106,6 +134,7 @@ ${content.slice(0, 8000)}`,
       work_experience: parsed.work_experience || null,
       ai_summary: parsed.ai_summary || null,
       resume_filename: filename,
+      resume_url: resume_url || null,
       raw_text: content.slice(0, 10000),
     }).select().single();
 
@@ -116,7 +145,7 @@ ${content.slice(0, 8000)}`,
     });
   } catch (e) {
     console.error("parse-resume error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: toErrorMessage(e) }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

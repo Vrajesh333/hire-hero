@@ -1,5 +1,5 @@
 import { QueryClient, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchJobs, createJob, deleteJob, fetchCandidates, createCandidate, deleteCandidate, fetchMatchResults, toggleShortlist } from "./api";
+import { fetchJobs, createJob, deleteJob, fetchCandidates, createCandidate, deleteCandidate, deleteCandidates, deleteAllCandidates, fetchMatchResults, toggleShortlist } from "./api";
 import type { Job, Candidate } from "@/types";
 
 export function useJobs() {
@@ -39,6 +39,28 @@ export function useDeleteCandidate() {
   return useMutation({
     mutationFn: deleteCandidate,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["candidates"] }),
+  });
+}
+
+export function useDeleteCandidates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteCandidates,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["candidates"] });
+      await qc.invalidateQueries({ queryKey: ["match_results"] });
+    },
+  });
+}
+
+export function useDeleteAllCandidates() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteAllCandidates,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["candidates"] });
+      await qc.invalidateQueries({ queryKey: ["match_results"] });
+    },
   });
 }
 

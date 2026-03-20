@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { ScoreBar } from "@/components/ScoreBar";
-import { Star, StarOff, Mail, Phone, Award, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
+import { Star, StarOff, Mail, Phone, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
 import type { CandidateWithMatch } from "@/types";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";

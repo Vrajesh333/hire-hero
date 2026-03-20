@@ -1,15 +1,212 @@
-import { useCallback, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Upload, FileText, X, Loader2 } from "lucide-react";
+import { Upload, FileText, X, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useQueryClient } from "@tanstack/react-query";
+import { useCandidates, useDeleteAllCandidates, useDeleteCandidates } from "@/lib/queries";
+import * as pdfjsLib from "pdfjs-dist";
+import mammoth from "mammoth";
+import { Checkbox } from "@/components/ui/checkbox";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url,
+).toString();
+
+async function getFunctionErrorMessage(error: unknown): Promise<string> {
+  if (!error || typeof error !== "object") {
+    return "Failed to upload resumes";
+  }
+
+  const e = error as {
+    message?: string;
+    name?: string;
+    context?: {
+      json?: () => Promise<any>;
+      text?: () => Promise<string>;
+      status?: number;
+    };
+  };
+
+  // Supabase Functions errors include a response-like context with server payload.
+  if (e.context) {
+    try {
+      if (typeof e.context.json === "function") {
+        const payload = await e.context.json();
+        const details = payload?.error || payload?.message;
+        if (typeof details === "string" && details.trim()) return details;
+      }
+    } catch {
+      // Ignore JSON parsing errors and try text fallback.
+    }
+
+    try {
+      if (typeof e.context.text === "function") {
+        const raw = await e.context.text();
+        if (raw?.trim()) return raw;
+      }
+    } catch {
+      // Ignore text parsing errors and continue fallback chain.
+    }
+
+    if (e.context.status === 429) return "Rate limited by AI service. Please try again shortly.";
+    if (e.context.status === 402) return "AI credits exhausted. Please add credits and retry.";
+  }
+
+  if (e.message?.includes("non-2xx")) {
+    return "Upload failed in Edge Function. Check function logs and required secrets (LOVABLE_API_KEY, SUPABASE_SERVICE_ROLE_KEY).";
+  }
+
+  return e.message || "Failed to upload resumes";
+}
+
+function isEdgeFunctionTransportError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const e = error as { name?: string; message?: string };
+  const msg = (e.message || "").toLowerCase();
+
+  return (
+    e.name === "FunctionsFetchError" ||
+    msg.includes("failed to send a request to the edge function") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("network")
+  );
+}
+
+function inferCandidateName(filename: string, text: string): string | null {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 2 && line.length < 80);
+
+  if (firstLine) {
+    return firstLine.replace(/\s+/g, " ").trim();
+  }
+
+  const base = filename.replace(/\.[^.]+$/, "");
+  const pretty = base
+    .replace(/[_\-.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return pretty || null;
+}
+
+function inferEmail(text: string): string | null {
+  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match?.[0] || null;
+}
+
+function inferPhone(text: string): string | null {
+  const compact = text.replace(/\s+/g, " ");
+  const match = compact.match(/(\+?\d[\d\s().-]{8,}\d)/);
+  return match?.[0]?.trim() || null;
+}
+
+function inferSkills(text: string): string[] {
+  const knownSkills = [
+    "javascript",
+    "typescript",
+    "react",
+    "node",
+    "python",
+    "java",
+    "sql",
+    "aws",
+    "docker",
+    "kubernetes",
+    "graphql",
+    "git",
+  ];
+
+  const lower = text.toLowerCase();
+  return knownSkills.filter((skill) => lower.includes(skill));
+}
+
+async function saveCandidateFallback(filename: string, text: string) {
+  const payload = {
+    name: inferCandidateName(filename, text),
+    email: inferEmail(text),
+    phone: inferPhone(text),
+    skills: inferSkills(text),
+    resume_filename: filename,
+    raw_text: text,
+    ai_summary: "Uploaded while parser service was unavailable. Structured AI extraction pending.",
+  };
+
+  const { error } = await supabase.from("candidates").insert(payload);
+  if (error) throw error;
+}
+
+function getFileExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
+}
+
+async function extractPdfText(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const doc = await pdfjsLib.getDocument({ data: bytes }).promise;
+
+  const chunks: string[] = [];
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const page = await doc.getPage(pageNum);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item) => ("str" in item ? item.str : ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (pageText) {
+      chunks.push(pageText);
+    }
+  }
+
+  return chunks.join("\n\n").trim();
+}
+
+async function extractDocxText(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value.replace(/\s+/g, " ").trim();
+}
+
+async function extractTextFromResume(file: File): Promise<string> {
+  const ext = getFileExtension(file.name);
+
+  if (ext === "pdf") {
+    return extractPdfText(file);
+  }
+
+  if (ext === "docx") {
+    return extractDocxText(file);
+  }
+
+  return (await file.text()).trim();
+}
 
 export function ResumeUploader() {
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const qc = useQueryClient();
+  const { data: candidates } = useCandidates();
+  const deleteCandidates = useDeleteCandidates();
+  const deleteAllCandidates = useDeleteAllCandidates();
+
+  const candidateList = candidates ?? [];
+  const allSelected = useMemo(
+    () => candidateList.length > 0 && selectedCandidateIds.length === candidateList.length,
+    [candidateList.length, selectedCandidateIds.length],
+  );
+
+  useEffect(() => {
+    const validIds = new Set(candidateList.map((c) => c.id));
+    setSelectedCandidateIds((prev) => prev.filter((id) => validIds.has(id)));
+  }, [candidateList]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -29,22 +226,119 @@ export function ResumeUploader() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const toggleCandidateSelection = (id: string) => {
+    setSelectedCandidateIds((prev) =>
+      prev.includes(id) ? prev.filter((candidateId) => candidateId !== id) : [...prev, id],
+    );
+  };
+
+  const toggleSelectAllCandidates = () => {
+    if (allSelected) {
+      setSelectedCandidateIds([]);
+      return;
+    }
+
+    setSelectedCandidateIds(candidateList.map((candidate) => candidate.id));
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedCandidateIds.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Delete ${selectedCandidateIds.length} selected resume(s)? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteCandidates.mutateAsync(selectedCandidateIds);
+      toast.success(`${selectedCandidateIds.length} resume(s) deleted.`);
+      setSelectedCandidateIds([]);
+    } catch (error) {
+      const msg = await getFunctionErrorMessage(error);
+      toast.error(`Failed to delete selected resumes: ${msg}`);
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (candidateList.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Delete all ${candidateList.length} uploaded resume(s)? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteAllCandidates.mutateAsync();
+      toast.success("All resumes deleted from database.");
+      setSelectedCandidateIds([]);
+    } catch (error) {
+      const msg = await getFunctionErrorMessage(error);
+      toast.error(`Failed to delete all resumes: ${msg}`);
+    }
+  };
+
   const handleUpload = async () => {
     if (files.length === 0) return;
     setUploading(true);
+    let successCount = 0;
+    let fallbackCount = 0;
+    const failures: string[] = [];
+
     try {
       for (const file of files) {
-        const text = await file.text();
-        const { data, error } = await supabase.functions.invoke("parse-resume", {
-          body: { filename: file.name, content: text },
-        });
-        if (error) throw error;
+        let extractedText = "";
+        try {
+          extractedText = await extractTextFromResume(file);
+          if (!extractedText.trim()) {
+            throw new Error("Could not extract readable text from this file.");
+          }
+
+          const { error } = await supabase.functions.invoke("parse-resume", {
+            body: { filename: file.name, content: extractedText },
+          });
+
+          if (error) throw error;
+          successCount++;
+        } catch (err) {
+          if (isEdgeFunctionTransportError(err)) {
+            try {
+              await saveCandidateFallback(file.name, extractedText);
+              successCount++;
+              fallbackCount++;
+              continue;
+            } catch (fallbackErr) {
+              const primary = await getFunctionErrorMessage(err);
+              const fallback = await getFunctionErrorMessage(fallbackErr);
+              failures.push(`${file.name}: ${primary}. Fallback insert failed: ${fallback}`);
+              continue;
+            }
+          }
+
+          const msg = await getFunctionErrorMessage(err);
+          failures.push(`${file.name}: ${msg}`);
+        }
       }
-      toast.success(`${files.length} resume(s) uploaded and parsed successfully!`);
-      setFiles([]);
-      qc.invalidateQueries({ queryKey: ["candidates"] });
-    } catch (err: any) {
-      toast.error(err.message || "Failed to upload resumes");
+
+      if (successCount > 0) {
+        qc.invalidateQueries({ queryKey: ["candidates"] });
+        if (fallbackCount > 0) {
+          toast.success(
+            `${successCount} resume(s) uploaded. ${fallbackCount} saved in fallback mode (AI parse will need retry).`,
+          );
+        } else {
+          toast.success(`${successCount} resume(s) uploaded and parsed successfully.`);
+        }
+      }
+
+      if (failures.length > 0) {
+        const first = failures[0];
+        const extra = failures.length > 1 ? ` (+${failures.length - 1} more)` : "";
+        toast.error(`Upload failed for ${failures.length} file(s). ${first}${extra}`);
+      }
+
+      if (successCount > 0) {
+        setFiles([]);
+      }
     } finally {
       setUploading(false);
     }
@@ -94,6 +388,80 @@ export function ResumeUploader() {
           </Button>
         </div>
       )}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Manage Uploaded Resumes</CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                {candidateList.length} resume(s) currently stored in database
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDeleteSelected}
+                disabled={
+                  selectedCandidateIds.length === 0 ||
+                  deleteCandidates.isPending ||
+                  deleteAllCandidates.isPending
+                }
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                Delete Selected
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteAll}
+                disabled={
+                  candidateList.length === 0 || deleteCandidates.isPending || deleteAllCandidates.isPending
+                }
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                Delete All
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2 text-sm">
+            <Checkbox checked={allSelected} onCheckedChange={toggleSelectAllCandidates} />
+            <span>Select all</span>
+          </div>
+
+          <div className="space-y-1.5 max-h-56 overflow-auto">
+            {candidateList.map((candidate) => {
+              const label = candidate.resume_filename || candidate.name || "Untitled Resume";
+              const isSelected = selectedCandidateIds.includes(candidate.id);
+
+              return (
+                <div key={candidate.id} className="flex items-center justify-between bg-muted rounded-lg px-3 py-2 text-sm">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleCandidateSelection(candidate.id)}
+                    />
+                    <FileText className="h-4 w-4 text-primary flex-shrink-0" />
+                    <span className="truncate">{label}</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground flex-shrink-0 ml-3">
+                    {new Date(candidate.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+              );
+            })}
+
+            {candidateList.length === 0 && (
+              <div className="text-sm text-muted-foreground py-4 text-center">
+                No uploaded resumes found in database.
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

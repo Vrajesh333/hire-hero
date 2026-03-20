@@ -38,6 +38,18 @@ export async function deleteCandidate(id: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function deleteCandidates(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+
+  const { error } = await db.from("candidates").delete().in("id", ids);
+  if (error) throw error;
+}
+
+export async function deleteAllCandidates(): Promise<void> {
+  const { error } = await db.from("candidates").delete().not("id", "is", null);
+  if (error) throw error;
+}
+
 export async function fetchMatchResults(jobId: string): Promise<MatchResult[]> {
   const { data, error } = await db.from("match_results").select("*").eq("job_id", jobId).order("overall_score", { ascending: false });
   if (error) throw error;
