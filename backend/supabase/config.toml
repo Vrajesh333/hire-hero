@@ -1,0 +1,10 @@
+project_id = "gbduouransvaopozwubn"
+
+[functions.parse-resume]
+verify_jwt = false
+
+[functions.match-candidates]
+verify_jwt = false
+
+[functions.ai-search]
+verify_jwt = false
