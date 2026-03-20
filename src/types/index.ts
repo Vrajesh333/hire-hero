@@ -43,6 +43,7 @@ export interface MatchResult {
   strengths: string[] | null;
   skill_gaps: string[] | null;
   missing_requirements: string[] | null;
+  interview_questions: string[] | null;
   shortlisted: boolean;
   created_at: string;
 }

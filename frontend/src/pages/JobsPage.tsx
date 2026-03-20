@@ -24,7 +24,7 @@ export default function JobsPage() {
         body: { job_id: jobId },
       });
       if (error) throw error;
-      toast.success(`Matching complete! ${data?.matched ?? 0} candidates scored.`);
+      toast.success(`Matching complete! ${data?.matched ?? 0} candidates scored and ${data?.questions_generated ?? 0} interview kits generated.`);
       qc.invalidateQueries({ queryKey: ["match_results", jobId] });
     } catch (err: any) {
       toast.error(err.message || "Matching failed");

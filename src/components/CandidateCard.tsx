@@ -166,6 +166,16 @@ export function CandidateCard({ candidate, onToggleShortlist, rank }: CandidateC
                     {m.explanation}
                   </div>
                 )}
+
+                {/* Interview Questions */}
+                {m?.interview_questions && m.interview_questions.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Suggested Interview Questions</p>
+                    <ul className="text-xs space-y-1 pl-4 list-disc">
+                      {m.interview_questions.map((question, i) => <li key={i}>{question}</li>)}
+                    </ul>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

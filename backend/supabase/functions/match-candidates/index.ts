@@ -34,6 +34,7 @@ serve(async (req) => {
     }
 
     let matched = 0;
+    let questionsGenerated = 0;
     // Process in batches of 3
     for (let i = 0; i < candidates.length; i += 3) {
       const batch = candidates.slice(i, i + 3);
@@ -88,8 +89,15 @@ Summary: ${candidate.ai_summary || ""}`,
                       strengths: { type: "array", items: { type: "string" }, description: "Key strengths" },
                       skill_gaps: { type: "array", items: { type: "string" }, description: "Missing skills" },
                       missing_requirements: { type: "array", items: { type: "string" }, description: "Unmet requirements" },
+                      interview_questions: {
+                        type: "array",
+                        items: { type: "string" },
+                        minItems: 5,
+                        maxItems: 8,
+                        description: "Targeted interview questions tailored to this job and candidate",
+                      },
                     },
-                    required: ["overall_score", "skill_score", "experience_score", "education_score", "explanation", "strengths", "skill_gaps", "missing_requirements"],
+                    required: ["overall_score", "skill_score", "experience_score", "education_score", "explanation", "strengths", "skill_gaps", "missing_requirements", "interview_questions"],
                     additionalProperties: false,
                   },
                 },
@@ -122,8 +130,12 @@ Summary: ${candidate.ai_summary || ""}`,
           strengths: scores.strengths,
           skill_gaps: scores.skill_gaps,
           missing_requirements: scores.missing_requirements,
+          interview_questions: scores.interview_questions,
         }, { onConflict: "job_id,candidate_id" });
 
+        if (Array.isArray(scores.interview_questions) && scores.interview_questions.length > 0) {
+          questionsGenerated++;
+        }
         matched++;
       });
 
@@ -132,7 +144,7 @@ Summary: ${candidate.ai_summary || ""}`,
       if (i + 3 < candidates.length) await new Promise((r) => setTimeout(r, 500));
     }
 
-    return new Response(JSON.stringify({ matched }), {
+    return new Response(JSON.stringify({ matched, questions_generated: questionsGenerated }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
